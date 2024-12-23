@@ -33,6 +33,41 @@ namespace duckpgq {
 
 namespace core {
 
+namespace {
+
+// Get fully qualified column name from the given [pq_tbl].
+string GetColNameFromPropertyGraphTbl(const string& label, const PropertyGraphTable& pq_tbl) {
+  string col = label;
+  for (const auto& cur_col : pq_tbl.column_names) {
+    col += ".";
+    col += cur_col;
+  }
+  return col;
+}
+
+// Get all fully-qualified column names for the given property graph [pq].
+unordered_set<string> GetFqPropertyGraphColNames(const CreatePropertyGraphInfo& pq) {  
+  unordered_set<string> fq_col_names;
+  fq_col_names.reserve(pq.label_map.size());
+  for (const auto& [label, tbl] : pq.label_map) {
+    fq_col_names.insert(GetColNameFromPropertyGraphTbl(label, *tbl));
+  }
+  return fq_col_names;
+}
+
+// Get fully-qualified column name from the given expression [col_ref_expr].
+string GetFqColNameFromColExpr(const ColumnRefExpression& col_ref_expr) {
+  const auto& col_names = col_ref_expr.column_names;
+  string fq_col_name = col_names[0];
+  for (idx_t idx = 1; idx < col_names.size(); ++idx) {
+    fq_col_name += ".";
+    fq_col_name += col_names[idx];
+  }
+  return fq_col_name;
+}
+
+}  // namespace
+
 shared_ptr<PropertyGraphTable>
 PGQMatchFunction::FindGraphTable(const string &label,
                                  CreatePropertyGraphInfo &pg_table) {
@@ -915,7 +950,16 @@ PGQMatchFunction::MatchBindReplace(ClientContext &context,
   auto match_index = bind_input.inputs[0].GetValue<int32_t>();
   auto ref = dynamic_cast<MatchExpression *>(
       duckpgq_state->transform_expression[match_index].get());
+  
+  string expr_str = ref->ToString();
+  std::cerr << "Expression = " << expr_str << std::endl;
+  
   auto pg_table = duckpgq_state->GetPropertyGraph(ref->pg_name);
+  const auto& all_fq_col_names = GetFqPropertyGraphColNames(*pg_table);
+
+  for (auto col : all_fq_col_names) {
+    std::cerr << "All col name - " << col << std::endl;
+  }
 
   vector<unique_ptr<ParsedExpression>> conditions;
 
@@ -954,6 +998,11 @@ PGQMatchFunction::MatchBindReplace(ClientContext &context,
     unordered_set<string> named_subpaths;
     auto column_ref = dynamic_cast<ColumnRefExpression *>(expression.get());
     if (column_ref != nullptr) {
+      const auto cur_fq_col_name = GetFqColNameFromColExpr(*column_ref);
+      if (all_fq_col_names.find(cur_fq_col_name) == all_fq_col_names.end()) {
+        throw BinderException("Property %s is never registered", cur_fq_col_name);
+      }
+
       if (named_subpaths.count(column_ref->column_names[0]) &&
           column_ref->column_names.size() == 1) {
         final_column_list.emplace_back(make_uniq<ColumnRefExpression>(
